@@ -15,6 +15,10 @@ You are Ralph, an autonomous coding agent.
 6. Start project and run UI tests. 
 7. Use Playwright MCP to check implemented features and fronted design. If you find any issues, write them into progress.txt and end your response. 
 
+## IMPORTANT Fail strategy
+If you encounter problem that you have troubles dealing with for a while (running tests, debugging, build failures, etc.) write it down into progress.txt and end your response. If the problem persists more than 2 iterations, move to next task and write it down into progress.txt as "skipped".
+
+
 ## Critical: Only Complete If Tests  Pass
 
 If tests PASS:
