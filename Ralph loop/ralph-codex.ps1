@@ -21,6 +21,14 @@ param(
 )
 
 # ============================================================================
+# UTF-8 ENCODING (Czech diacritics support)
+# ============================================================================
+chcp 65001 > $null 2>&1
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
+# ============================================================================
 # STARTUP BANNER
 # ============================================================================
 
@@ -67,8 +75,8 @@ Write-Host "[$timestamp] Authentication:" -ForegroundColor Cyan
 
 if ($env:OPENAI_API_KEY) {
     Write-Host "  Codex: OPENAI_API_KEY configured"
-} elseif (Test-Path (Join-Path $env:USERPROFILE ".codex\auth.json") -or
-          Test-Path (Join-Path $env:APPDATA "codex\auth.json")) {
+} elseif ((Test-Path (Join-Path $env:USERPROFILE ".codex\auth.json")) -or
+          (Test-Path (Join-Path $env:APPDATA "codex\auth.json"))) {
     Write-Host "  Codex: Signed in via ChatGPT account"
 } else {
     Write-Host "  WARNING: No auth found. Run 'codex' to sign in or set OPENAI_API_KEY" -ForegroundColor Yellow
@@ -107,11 +115,12 @@ while (($Max -eq 0) -or ($i -le $Max)) {
         $prompt += "`n`n" + (Get-Content $progressFile -Raw)
     }
     $tempPrompt = Join-Path ([System.IO.Path]::GetTempPath()) "ralph-codex-prompt.md"
-    Set-Content -Path $tempPrompt -Value $prompt -Encoding UTF8
+    # Write with UTF-8 BOM so child processes reliably detect encoding
+    [System.IO.File]::WriteAllText($tempPrompt, $prompt, [System.Text.UTF8Encoding]::new($true))
 
     # Build Codex CLI arguments using "codex exec" (headless mode, no TTY needed)
-    # Usage: codex exec --full-auto [PROMPT]
-    $codexArgs = @("exec", "--full-auto")
+    # --dangerously-bypass-approvals-and-sandbox: full write access (conflicts with --full-auto)
+    $codexArgs = @("exec", "--dangerously-bypass-approvals-and-sandbox")
     if ($Model) {
         $codexArgs += @("-m", $Model)
     }
@@ -179,7 +188,7 @@ while (($Max -eq 0) -or ($i -le $Max)) {
     # ------------------------------------------------------------------------
     # Handle Auth Errors
     # ------------------------------------------------------------------------
-    if ($result -match "(?i)(invalid.*api.?key|authentication|unauthorized|401)") {
+    if ($result -match "(?i)(invalid.*api.?key|authentication.?(error|fail)|unauthorized.*api|401.*unauthorized)") {
         Write-Host "Authentication error. Check your OPENAI_API_KEY." -ForegroundColor Red
         exit 1
     }
