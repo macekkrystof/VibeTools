@@ -105,7 +105,7 @@ cd "Ralph loop"
 **Windows (Codex):**
 ```powershell
 cd "Ralph loop"
-.\ralph-codex.ps1 -Model "o4-mini"
+.\ralph-codex.ps1 -Model "gpt-5.3-codex"
 ```
 
 **Linux / Docker (Claude):**
