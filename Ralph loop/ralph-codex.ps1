@@ -28,6 +28,9 @@ chcp 65001 > $null 2>&1
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
+# Prevent ErrorRecord objects from stderr (RemoteException) from terminating the script
+$ErrorActionPreference = 'Continue'
+
 # ============================================================================
 # STARTUP BANNER
 # ============================================================================
@@ -131,12 +134,30 @@ while (($Max -eq 0) -or ($i -le $Max)) {
     $timestamp = Get-Date -Format "HH:mm:ss"
     Write-Host "[$timestamp] Starting Codex CLI (exec mode)..." -ForegroundColor Cyan
 
+    # Capture output, converting ErrorRecord objects (RemoteException) to plain strings
     $result = ""
-    & codex.cmd @codexArgs 2>&1 | ForEach-Object {
-        Write-Host $_
-        $result += "$_`n"
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
+        & codex.cmd @codexArgs 2>&1 | ForEach-Object {
+            # stderr lines arrive as ErrorRecord - extract the actual message
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                $line = $_.Exception.Message
+                # Skip bare type names that carry no useful info
+                if ($line -match '^System\.' -or [string]::IsNullOrWhiteSpace($line)) { return }
+            } else {
+                $line = "$_"
+            }
+            Write-Host $line
+            $result += "$line`n"
+        }
+        $exitCode = $LASTEXITCODE
+    } catch {
+        Write-Host "Pipeline error: $($_.Exception.Message)" -ForegroundColor Yellow
+        $exitCode = if ($LASTEXITCODE) { $LASTEXITCODE } else { 1 }
+    } finally {
+        $ErrorActionPreference = $oldEAP
     }
-    $exitCode = $LASTEXITCODE
 
     # Clean up temp prompt
     Remove-Item $tempPrompt -ErrorAction SilentlyContinue
