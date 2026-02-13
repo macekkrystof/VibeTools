@@ -189,39 +189,38 @@ while (($Max -eq 0) -or ($i -le $Max)) {
     $emptyCount = 0
 
     # ------------------------------------------------------------------------
-    # Handle Rate Limiting
-    # ------------------------------------------------------------------------
-    if ($result -match "(?i)(rate.?limit|too many requests|HTTP[/ ]429|status[:\s]429|quota exceeded|exceeded your.*quota)") {
-        $rateLimitCount++
-
-        Write-Host ""
-        Write-Host "========================================" -ForegroundColor Yellow
-        Write-Host " Rate limit hit (#$rateLimitCount)" -ForegroundColor Yellow
-        Write-Host " Waiting ${RetryDelay}s..." -ForegroundColor Yellow
-        Write-Host "========================================" -ForegroundColor Yellow
-
-        Start-Sleep -Seconds $RetryDelay
-        continue
-    }
-
-    $rateLimitCount = 0
-
-    # ------------------------------------------------------------------------
-    # Handle Auth Errors
-    # ------------------------------------------------------------------------
-    if ($result -match "(?i)(invalid.*api.?key|authentication.?(error|fail)|unauthorized.*api|401.*unauthorized)") {
-        Write-Host "Authentication error. Check your OPENAI_API_KEY." -ForegroundColor Red
-        exit 1
-    }
-
-    # ------------------------------------------------------------------------
-    # Handle Errors
+    # Handle Errors (only check rate limit / auth when Codex actually failed)
     # ------------------------------------------------------------------------
     if ($exitCode -ne 0) {
+        # Rate Limiting
+        if ($result -match "(?i)(rate.?limit|too many requests|HTTP[/ ]429|status[:\s]429|quota exceeded|exceeded your.*quota)") {
+            $rateLimitCount++
+
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Yellow
+            Write-Host " Rate limit hit (#$rateLimitCount)" -ForegroundColor Yellow
+            Write-Host " Waiting ${RetryDelay}s..." -ForegroundColor Yellow
+            Write-Host "========================================" -ForegroundColor Yellow
+
+            Start-Sleep -Seconds $RetryDelay
+            continue
+        }
+
+        $rateLimitCount = 0
+
+        # Auth Errors
+        if ($result -match "(?i)(invalid.*api.?key|authentication.?(error|fail)|unauthorized.*api|401.*unauthorized)") {
+            Write-Host "Authentication error. Check your OPENAI_API_KEY." -ForegroundColor Red
+            exit 1
+        }
+
+        # Other Errors
         Write-Host "ERROR: Codex crashed (exit $exitCode). Retrying in ${ErrorRetryDelay}s..." -ForegroundColor Red
         Start-Sleep -Seconds $ErrorRetryDelay
         continue
     }
+
+    $rateLimitCount = 0
 
     # ------------------------------------------------------------------------
     # Check for Completion
