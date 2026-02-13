@@ -170,7 +170,7 @@ while (($Max -eq 0) -or ($i -le $Max)) {
     # ------------------------------------------------------------------------
     # Handle Rate Limiting
     # ------------------------------------------------------------------------
-    if ($result -match "(?i)(rate.?limit|too many requests|429|quota exceeded|exceeded.*limit)") {
+    if ($result -match "(?i)(rate.?limit|too many requests|HTTP[/ ]429|status[:\s]429|quota exceeded|exceeded your.*quota)") {
         $rateLimitCount++
 
         Write-Host ""
