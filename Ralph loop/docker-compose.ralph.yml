@@ -1,0 +1,129 @@
+# ============================================================================
+# Docker Compose for Ralph - Autonomous Code Agent
+# ============================================================================
+# Two services: ralph-claude (Claude Code) and ralph-codex (OpenAI Codex).
+# Both auto-update their CLI on every container start.
+#
+# Usage:
+#   ./run-ralph-claude.sh              # start Claude agent
+#   ./run-ralph-codex.sh               # start Codex agent
+#   docker compose -f docker-compose.ralph.yml up ralph-claude
+#   docker compose -f docker-compose.ralph.yml up ralph-codex
+#   docker compose -f docker-compose.ralph.yml down
+#
+# Required:
+#   - Claude/Codex credentials mounted from home directory
+#   - SSH keys mounted from ~/.ssh (for git push)
+#
+# Optional:
+#   - Set HOST_UID/HOST_GID in .env file to match your host user
+#   - Add database or other services below as needed
+# ============================================================================
+
+# Shared configuration anchor
+x-ralph-common: &ralph-common
+  build:
+    context: .
+    dockerfile: Dockerfile.ralph
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  working_dir: /app
+  restart: "no"
+  shm_size: '2gb'
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    # Repository (read-write)
+    - .:/app
+    # SSH keys for git push (read-only)
+    - ${HOME}/.ssh:/.ssh:ro
+    # Git config (read-only)
+    - ${HOME}/.gitconfig:/.gitconfig:ro
+  environment: &ralph-common-env
+    # --- Ralph Settings ---
+    - MAX_ITERATIONS=${MAX_ITERATIONS:-0}
+    - RETRY_DELAY=60
+    - ERROR_RETRY_DELAY=5
+    - AUTO_PUSH=${AUTO_PUSH:-true}
+    - PUSH_EVERY_N=${PUSH_EVERY_N:-1}
+    - ITERATION_TIMEOUT=${ITERATION_TIMEOUT:-3600}
+    # --- Git Configuration ---
+    - GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-Ralph Agent}
+    - GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-ralph@localhost}
+    - GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-Ralph Agent}
+    - GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-ralph@localhost}
+    # --- System ---
+    - HOME=/tmp/home
+    - DOTNET_ROOT=/usr/share/dotnet
+
+services:
+  # --------------------------------------------------------------------------
+  # OPTIONAL: Database service (uncomment and customize as needed)
+  # --------------------------------------------------------------------------
+  # postgres:
+  #   image: postgres:17-alpine
+  #   container_name: ralph-postgres
+  #   environment:
+  #     POSTGRES_USER: admin
+  #     POSTGRES_PASSWORD: changeme
+  #     POSTGRES_DB: mydb
+  #   volumes:
+  #     - ralph_pgdata:/var/lib/postgresql/data
+  #   networks:
+  #     - ralph-net
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U admin -d mydb"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+
+  # --------------------------------------------------------------------------
+  # Ralph with Claude Code
+  # --------------------------------------------------------------------------
+  ralph-claude:
+    <<: *ralph-common
+    container_name: ralph-claude
+    entrypoint: ["/bin/bash", "/app/ralph.sh"]
+    volumes:
+      - .:/app
+      - ${HOME}/.claude:/.claude
+      - ${HOME}/.ssh:/.ssh:ro
+      - ${HOME}/.gitconfig:/.gitconfig:ro
+    environment:
+      <<: *ralph-common-env
+      # --- Claude Authentication ---
+      # Option 1: Use Pro/Max subscription (mount ~/.claude above)
+      CLAUDE_CONFIG_DIR: /.claude
+      # Option 2: Use API key (uncomment)
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # --- Prompt files (customize as needed) ---
+      # PROMPT_FILES: "@prompt.md @progress.txt"
+
+  # --------------------------------------------------------------------------
+  # Ralph with OpenAI Codex
+  # --------------------------------------------------------------------------
+  ralph-codex:
+    <<: *ralph-common
+    container_name: ralph-codex
+    entrypoint: ["/bin/bash", "/app/ralph-codex.sh"]
+    volumes:
+      - .:/app
+      - ${HOME}/.codex:/.codex
+      - ${HOME}/.ssh:/.ssh:ro
+      - ${HOME}/.gitconfig:/.gitconfig:ro
+    environment:
+      <<: *ralph-common-env
+      # --- Codex Authentication ---
+      # Option 1: OAuth (mount ~/.codex above, sign in locally with 'codex')
+      CODEX_CONFIG_DIR: /.codex
+      # Option 2: API key (uncomment)
+      # OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # --- Model override (optional) ---
+      # CODEX_MODEL: o4-mini
+
+# Uncomment for database:
+# networks:
+#   ralph-net:
+#     driver: bridge
+#
+# volumes:
+#   ralph_pgdata:

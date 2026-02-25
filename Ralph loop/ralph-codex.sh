@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
-# Ralph - Autonomous Claude Code Agent Runner
+# Ralph - Autonomous Codex CLI Agent Runner
 # ============================================================================
 # Linux/Docker version with infinite retry on rate limits.
-# Runs Claude CLI in a loop, automatically handles rate limits and errors.
+# Runs OpenAI Codex CLI in a loop. No budget/schedule tracking.
 # Features: persistent logging, iteration timeout, git state tracking,
 #           orphan process cleanup, configurable push frequency.
 #
@@ -13,11 +13,11 @@
 #   ERROR_RETRY_DELAY - Seconds to wait on errors (default: 5)
 #   AUTO_PUSH         - Auto-push commits after each iteration (default: true)
 #   PUSH_EVERY_N      - Push every N iterations instead of every one (default: 1)
-#   ITERATION_TIMEOUT - Max seconds per Claude invocation (default: 3600)
-#   CLAUDE_CONFIG_DIR - Path to Claude config directory
-#   ANTHROPIC_API_KEY - API key (alternative to Claude login)
+#   ITERATION_TIMEOUT - Max seconds per Codex invocation (default: 3600)
+#   OPENAI_API_KEY    - OpenAI API key (alternative to OAuth login)
+#   CODEX_CONFIG_DIR  - Path to Codex config directory (for OAuth credentials)
+#   CODEX_MODEL       - Model to use (optional, uses Codex default)
 #   LOGDIR            - Directory for log files (default: /app/.claude/logs)
-#   PROMPT_FILES      - Files to pass to Claude (default: "@prompt.md @progress.txt")
 # ============================================================================
 
 set -e
@@ -32,55 +32,37 @@ mkdir -p "$HOME" 2>/dev/null || true
 # ----------------------------------------------------------------------------
 # User Identity Fix (required by SSH and git in Docker)
 # ----------------------------------------------------------------------------
-# Docker-compose may override the UID via `user:` directive, so the running UID
-# may not exist in /etc/passwd. SSH and git both need a valid passwd entry.
 if ! whoami &>/dev/null; then
     echo "ralph:x:$(id -u):$(id -g):Ralph Agent:${HOME}:/bin/bash" >> /etc/passwd 2>/dev/null || true
 fi
 
 # ----------------------------------------------------------------------------
-# Auto-Update Claude CLI
+# Auto-Update Codex CLI
 # ----------------------------------------------------------------------------
-# Update to latest version on every container start.
-# Uses user-writable npm prefix (set in Dockerfile via NPM_CONFIG_PREFIX).
 if command -v npm >/dev/null 2>&1; then
-    echo -e "[$(date '+%H:%M:%S')] Updating Claude CLI..."
-    npm install -g @anthropic-ai/claude-code 2>&1 | tail -1 || echo "  Update failed (will use existing version)"
+    echo -e "[$(date '+%H:%M:%S')] Updating Codex CLI..."
+    npm install -g @openai/codex 2>&1 | tail -1 || echo "  Update failed (will use existing version)"
 fi
 
 # ----------------------------------------------------------------------------
-# Claude Configuration
+# Codex Configuration (OAuth credentials)
 # ----------------------------------------------------------------------------
-if [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && [ ! -e "$HOME/.claude" ]; then
-    ln -sf "$CLAUDE_CONFIG_DIR" "$HOME/.claude" 2>/dev/null || true
+if [ -n "$CODEX_CONFIG_DIR" ] && [ -d "$CODEX_CONFIG_DIR" ] && [ ! -e "$HOME/.codex" ]; then
+    ln -sf "$CODEX_CONFIG_DIR" "$HOME/.codex" 2>/dev/null || true
 fi
 
 # ----------------------------------------------------------------------------
 # SSH Configuration (for git push)
 # ----------------------------------------------------------------------------
-# SSH ignores $HOME and uses path from /etc/passwd, so we need to:
-# 1. Copy keys to $HOME/.ssh (symlinks don't work reliably)
-# 2. Set GIT_SSH_COMMAND to explicitly use the correct key
 if [ -d "/.ssh" ]; then
-    # Completely remove any existing .ssh (symlink, directory, whatever)
     rm -rf "$HOME/.ssh" 2>/dev/null || true
-
-    # Create fresh .ssh directory with correct permissions
     mkdir -p "$HOME/.ssh"
     chmod 700 "$HOME/.ssh"
-
-    # Copy SSH keys and known_hosts
     cp /.ssh/id_* "$HOME/.ssh/" 2>/dev/null || true
     cp /.ssh/known_hosts "$HOME/.ssh/" 2>/dev/null || true
-
-    # Set correct permissions (required by SSH)
     chmod 600 "$HOME/.ssh/id_"* 2>/dev/null || true
     chmod 644 "$HOME/.ssh/"*.pub 2>/dev/null || true
-
-    # Pre-populate known_hosts for GitHub (avoids host key verification issues)
     ssh-keyscan -t ed25519,rsa github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
-
-    # Create SSH config for GitHub using echo (more reliable than heredoc)
     {
         echo "Host github.com"
         echo "    HostName github.com"
@@ -90,16 +72,12 @@ if [ -d "/.ssh" ]; then
         echo "    StrictHostKeyChecking accept-new"
     } > "$HOME/.ssh/config"
     chmod 600 "$HOME/.ssh/config"
-
-    # Force git to use the correct SSH key
     export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
 fi
 
 # ----------------------------------------------------------------------------
 # Git Configuration
 # ----------------------------------------------------------------------------
-# Disable credential helper (gh CLI not installed, blocks push)
-# Force SSH for GitHub (not HTTPS)
 git config --global credential.helper "" 2>/dev/null || true
 git config --global url."git@github.com:".insteadOf "https://github.com/" 2>/dev/null || true
 git config --global --add safe.directory /app 2>/dev/null || true
@@ -118,12 +96,12 @@ ERROR_RETRY_DELAY=${ERROR_RETRY_DELAY:-5}
 AUTO_PUSH=${AUTO_PUSH:-true}
 PUSH_EVERY_N=${PUSH_EVERY_N:-1}
 ITERATION_TIMEOUT=${ITERATION_TIMEOUT:-3600}
-PROMPT_FILES=${PROMPT_FILES:-"@prompt.md @progress.txt"}
+CODEX_MODEL=${CODEX_MODEL:-}
 
 # Logging
 LOGDIR=${LOGDIR:-/app/.claude/logs}
 mkdir -p "$LOGDIR" 2>/dev/null || true
-LOGFILE="${LOGDIR}/ralph.log"
+LOGFILE="${LOGDIR}/ralph-codex.log"
 
 # Colors
 RED='\033[0;31m'
@@ -136,7 +114,6 @@ NC='\033[0m'
 # HELPER FUNCTIONS
 # ============================================================================
 
-# Log to both stdout and persistent file
 log() {
     local ts
     ts=$(date '+%Y-%m-%d %H:%M:%S')
@@ -144,32 +121,20 @@ log() {
     echo "[$ts] $(echo -e "$*" | sed 's/\x1b\[[0-9;]*m//g')" >> "$LOGFILE"
 }
 
-# Log only to file (for verbose output)
 log_file() {
     local ts
     ts=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$ts] $*" >> "$LOGFILE"
 }
 
-# Kill any leftover processes from a previous Claude iteration.
-# These can accumulate if Claude spawns subagents that launch long-running
-# processes and then the iteration times out or errors before cleanup.
-# Customize the patterns below for your project's tech stack.
 cleanup_orphans() {
     log "Cleaning up orphaned processes..."
-    # Common patterns - uncomment/modify as needed for your project:
+    # Customize for your project:
     # pkill -f "dotnet run" 2>/dev/null || true
     # pkill -f "node.*dev" 2>/dev/null || true
-    # pkill -f "chrome-headless-shell" 2>/dev/null || true
-    # Give processes a moment to die
-    # sleep 2
-    # Force kill anything still lingering
-    # pkill -9 -f "dotnet.*YourApp" 2>/dev/null || true
-    # pkill -9 -f "chrome-headless-shell" 2>/dev/null || true
-    true  # no-op by default, uncomment patterns above
+    true
 }
 
-# Push commits to remote with proper error handling
 try_push() {
     local branch
     branch=$(git branch --show-current 2>/dev/null)
@@ -194,7 +159,7 @@ try_push() {
 # ============================================================================
 
 echo -e "${CYAN}========================================${NC}"
-echo -e "${CYAN} Ralph - Autonomous Code Agent${NC}"
+echo -e "${CYAN} Ralph - Autonomous Code Agent (Codex)${NC}"
 if [ $MAX_ITERATIONS -eq 0 ]; then
     echo -e "${CYAN} Iterations: unlimited${NC}"
 else
@@ -203,7 +168,9 @@ fi
 echo -e "${CYAN} Iteration timeout: ${ITERATION_TIMEOUT}s${NC}"
 echo -e "${CYAN} Auto-push: ${AUTO_PUSH} (every ${PUSH_EVERY_N} iterations)${NC}"
 echo -e "${CYAN} Log file: ${LOGFILE}${NC}"
-echo -e "${CYAN} Prompt files: ${PROMPT_FILES}${NC}"
+if [ -n "$CODEX_MODEL" ]; then
+    echo -e "${CYAN} Model: ${CODEX_MODEL}${NC}"
+fi
 echo -e "${CYAN}========================================${NC}"
 echo ""
 
@@ -211,14 +178,13 @@ echo ""
 # Environment Check
 # ----------------------------------------------------------------------------
 echo -e "${CYAN}[$(date '+%H:%M:%S')] Environment:${NC}"
-echo -e "  Claude:   $(claude --version 2>/dev/null || echo 'NOT INSTALLED')"
+echo -e "  Codex:    $(codex --version 2>/dev/null || echo 'NOT INSTALLED')"
 echo -e "  Git:      $(git --version 2>/dev/null || echo 'NOT INSTALLED')"
 echo -e "  Node.js:  $(node --version 2>/dev/null || echo 'NOT INSTALLED')"
 echo -e "  User:     $(whoami 2>/dev/null || echo "UID $(id -u)") (UID: $(id -u))"
 echo -e "  HOME:     $HOME"
 echo -e "  Workdir:  $(pwd)"
 
-# Detect optional tools
 for tool in dotnet cmake g++ docker python3; do
     ver=$($tool --version 2>/dev/null | head -1) && echo -e "  $(printf '%-9s' "$tool") $ver" || true
 done
@@ -228,28 +194,14 @@ echo ""
 # Authentication Check
 # ----------------------------------------------------------------------------
 echo -e "${CYAN}[$(date '+%H:%M:%S')] Authentication:${NC}"
-claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+codex_dir="${CODEX_CONFIG_DIR:-$HOME/.codex}"
 
-if [ -n "$ANTHROPIC_API_KEY" ]; then
-    echo -e "  Claude: API key configured"
-elif [ -f "$claude_dir/.credentials.json" ] || [ -f "$claude_dir/credentials.json" ] || [ -f "/.claude/.credentials.json" ]; then
-    echo -e "  Claude: Login credentials found"
+if [ -n "$OPENAI_API_KEY" ]; then
+    echo -e "  Codex: OPENAI_API_KEY configured"
+elif [ -f "$codex_dir/auth.json" ] || [ -f "/.codex/auth.json" ]; then
+    echo -e "  Codex: OAuth credentials found (ChatGPT account)"
 else
-    echo -e "${YELLOW}  WARNING: No Claude auth found! Run 'claude login' or set ANTHROPIC_API_KEY${NC}"
-fi
-
-# SSH connectivity test (if SSH is configured)
-if [ -n "$GIT_SSH_COMMAND" ]; then
-    echo ""
-    echo -e "${CYAN}[$(date '+%H:%M:%S')] SSH connectivity:${NC}"
-    echo -e "  GIT_SSH_COMMAND: $GIT_SSH_COMMAND"
-    ssh_test=$(ssh -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o BatchMode=yes -T git@github.com 2>&1 || true)
-    if echo "$ssh_test" | grep -qi "successfully authenticated\|Hi "; then
-        echo -e "${GREEN}  SSH: OK — $(echo "$ssh_test" | head -1)${NC}"
-    else
-        echo -e "${RED}  SSH: FAILED — $(echo "$ssh_test" | head -1)${NC}"
-        echo -e "${YELLOW}  Check that ~/.ssh/id_ed25519 is authorized on GitHub${NC}"
-    fi
+    echo -e "${YELLOW}  WARNING: No Codex auth found! Run 'codex' to sign in or set OPENAI_API_KEY${NC}"
 fi
 echo ""
 
@@ -258,11 +210,12 @@ echo ""
 # ============================================================================
 
 rate_limit_count=0
+empty_count=0
 i=1
-tmpfile=$(mktemp /tmp/ralph-output.XXXXXX)
-trap 'rm -f "$tmpfile"' EXIT
+tmpfile=$(mktemp /tmp/ralph-codex-output.XXXXXX)
+trap 'rm -f "$tmpfile" /tmp/ralph-codex-prompt.md' EXIT
 
-log "Ralph started. Log file: $LOGFILE"
+log "Ralph (Codex) started. Log file: $LOGFILE"
 log "Iteration timeout: ${ITERATION_TIMEOUT}s"
 
 while [ $MAX_ITERATIONS -eq 0 ] || [ $i -le $MAX_ITERATIONS ]; do
@@ -270,44 +223,55 @@ while [ $MAX_ITERATIONS -eq 0 ] || [ $i -le $MAX_ITERATIONS ]; do
     echo -e "${GREEN} Iteration $i  ($(date '+%Y-%m-%d %H:%M:%S'))${NC}"
     echo -e "${GREEN}=====================================================${NC}"
 
-    # Cleanup any orphans from previous iteration
     cleanup_orphans
 
-    # Record git state BEFORE Claude run
+    # Build prompt from files (codex doesn't support @file references)
+    prompt_file="/tmp/ralph-codex-prompt.md"
+    : > "$prompt_file"
+    if [ -f "prompt.md" ]; then
+        cat "prompt.md" >> "$prompt_file"
+    else
+        log "${RED}ERROR: prompt.md not found!${NC}"
+        exit 1
+    fi
+    if [ -f "progress.txt" ]; then
+        echo -e "\n\n" >> "$prompt_file"
+        cat "progress.txt" >> "$prompt_file"
+    fi
+
+    # Record git state BEFORE
     head_before=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
     log "--- Iteration $i START ---"
     log "Git HEAD before: $(git log --oneline -1 2>/dev/null || echo 'unknown')"
 
-    # Run Claude CLI with tee - output goes to BOTH stdout (docker logs)
-    # AND temp file (for post-processing). No more output=$(...) buffering.
-    log "Starting Claude CLI (timeout: ${ITERATION_TIMEOUT}s)..."
+    # Build codex command
+    codex_args="exec --dangerously-bypass-approvals-and-sandbox"
+    if [ -n "$CODEX_MODEL" ]; then
+        codex_args="$codex_args -m $CODEX_MODEL"
+    fi
+
+    log "Starting Codex CLI (timeout: ${ITERATION_TIMEOUT}s)..."
 
     set +e
-    : > "$tmpfile"  # truncate
-
-    # Redirect stdin from /dev/null to prevent SIGTTIN: in a pipe like
-    # "timeout ... claude ... | tee ...", bash puts tee in the foreground
-    # process group while timeout+claude land in a background group.
-    # If claude (node) tries to read the controlling terminal, the kernel
-    # sends SIGTTIN which stops the process. Feeding /dev/null avoids this.
+    : > "$tmpfile"
     if [ "$ITERATION_TIMEOUT" -gt 0 ] 2>/dev/null; then
         timeout --kill-after=60 "$ITERATION_TIMEOUT" \
-            claude --dangerously-skip-permissions -p "$PROMPT_FILES" </dev/null 2>&1 | tee "$tmpfile"
+            codex $codex_args "Follow ALL instructions in the file: $prompt_file" </dev/null 2>&1 | tee "$tmpfile"
         exit_code=${PIPESTATUS[0]}
     else
-        claude --dangerously-skip-permissions -p "$PROMPT_FILES" </dev/null 2>&1 | tee "$tmpfile"
+        codex $codex_args "Follow ALL instructions in the file: $prompt_file" </dev/null 2>&1 | tee "$tmpfile"
         exit_code=${PIPESTATUS[0]}
     fi
     set -e
 
     output=$(cat "$tmpfile" 2>/dev/null || echo "")
 
-    # Record git state AFTER Claude run
+    # Record git state AFTER
     head_after=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
     log "Exit code: $exit_code"
     log "Git HEAD after: $(git log --oneline -1 2>/dev/null || echo 'unknown')"
 
-    # Show new commits made during this iteration
+    # Show new commits
     if [ "$head_before" != "$head_after" ] && [ "$head_before" != "unknown" ]; then
         new_commits=$(git log --oneline "$head_before".."$head_after" 2>/dev/null || echo "")
         if [ -n "$new_commits" ]; then
@@ -320,15 +284,11 @@ while [ $MAX_ITERATIONS -eq 0 ] || [ $i -le $MAX_ITERATIONS ]; do
         log "No new commits in this iteration."
     fi
 
-    # Always cleanup after Claude finishes (or is killed)
     cleanup_orphans
 
-    # ------------------------------------------------------------------------
-    # Handle Timeout (exit 124 = SIGTERM from timeout, 137 = SIGKILL)
-    # ------------------------------------------------------------------------
+    # Handle Timeout
     if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; then
-        log "${YELLOW}TIMEOUT: Iteration $i exceeded ${ITERATION_TIMEOUT}s (exit $exit_code). Moving to next iteration.${NC}"
-        # Still push commits from timed-out iteration if any were made
+        log "${YELLOW}TIMEOUT: Codex exceeded ${ITERATION_TIMEOUT}s (exit $exit_code). Moving to next iteration.${NC}"
         if [ "$AUTO_PUSH" = "true" ] && [ "$head_before" != "$head_after" ] && [ "$head_before" != "unknown" ]; then
             log "Pushing commits from timed-out iteration..."
             try_push
@@ -337,58 +297,55 @@ while [ $MAX_ITERATIONS -eq 0 ] || [ $i -le $MAX_ITERATIONS ]; do
         continue
     fi
 
-    # ------------------------------------------------------------------------
-    # Handle Rate Limiting
-    # ------------------------------------------------------------------------
-    if echo "$output" | grep -qi "hit your limit\|rate limit\|resets.*am\|resets.*pm"; then
-        rate_limit_count=$((rate_limit_count + 1))
-        reset_time=$(echo "$output" | grep -oP 'resets \K[0-9]+[ap]m.*' | head -1 || echo "unknown")
+    # Empty output guard
+    if [ -z "$(echo "$output" | tr -d '[:space:]')" ] && [ "$exit_code" -eq 0 ]; then
+        empty_count=$((empty_count + 1))
+        if [ "$empty_count" -ge 3 ]; then
+            log "${RED}FATAL: Codex produced no output 3 times in a row. Aborting.${NC}"
+            exit 1
+        fi
+        log "${YELLOW}WARNING: Codex produced no output. Retrying in ${ERROR_RETRY_DELAY}s... ($empty_count/3)${NC}"
+        sleep "$ERROR_RETRY_DELAY"
+        continue
+    fi
+    empty_count=0
 
-        log "${YELLOW}Rate limit hit (#${rate_limit_count}), reset: ${reset_time}. Waiting ${RETRY_DELAY}s...${NC}"
+    # Rate Limiting
+    if echo "$output" | grep -qiE "rate.?limit|too many requests|HTTP[/ ]429|status[: ]429|quota exceeded|exceeded your.*quota"; then
+        rate_limit_count=$((rate_limit_count + 1))
+        log "${YELLOW}Rate limit hit (#${rate_limit_count}). Waiting ${RETRY_DELAY}s...${NC}"
         sleep $RETRY_DELAY
         continue
     fi
 
     rate_limit_count=0
 
-    # ------------------------------------------------------------------------
-    # Handle OAuth Token Expiry
-    # ------------------------------------------------------------------------
-    if echo "$output" | grep -qi "OAuth token has expired\|authentication_error"; then
-        log "${YELLOW}OAuth token expired. Attempting refresh...${NC}"
-        claude --version 2>&1 || true  # Trigger token refresh
-        sleep 2
-        continue
+    # Auth Errors
+    if echo "$output" | grep -qiE "invalid.*api.?key|authentication.?(error|fail)|unauthorized.*api|401.*unauthorized"; then
+        log "${RED}Authentication error. Check your OPENAI_API_KEY.${NC}"
+        exit 1
     fi
 
-    # ------------------------------------------------------------------------
-    # Handle Errors
-    # ------------------------------------------------------------------------
+    # Other Errors
     if [ $exit_code -ne 0 ]; then
-        log "${RED}ERROR: Claude exited with code $exit_code. Retrying in ${ERROR_RETRY_DELAY}s...${NC}"
+        log "${RED}ERROR: Codex exited with code $exit_code. Retrying in ${ERROR_RETRY_DELAY}s...${NC}"
         log_file "Last 20 lines of output: $(tail -20 "$tmpfile" 2>/dev/null)"
         sleep $ERROR_RETRY_DELAY
         i=$((i + 1))
         continue
     fi
 
-    # ------------------------------------------------------------------------
     # Check for Completion
-    # ------------------------------------------------------------------------
     if echo "$output" | grep -q "<promise>COMPLETE</promise>"; then
         log "${GREEN}All tasks complete!${NC}"
-
         if [ "$AUTO_PUSH" = "true" ]; then
             log "Pushing final changes..."
             try_push
         fi
-
         exit 0
     fi
 
-    # ------------------------------------------------------------------------
     # Auto-Push (every N iterations)
-    # ------------------------------------------------------------------------
     if [ "$AUTO_PUSH" = "true" ] && [ $((i % PUSH_EVERY_N)) -eq 0 ]; then
         try_push
     fi
@@ -399,7 +356,6 @@ done
 
 log "${YELLOW}Max iterations ($MAX_ITERATIONS) reached${NC}"
 
-# Final push when max iterations reached
 if [ "$AUTO_PUSH" = "true" ]; then
     log "Final push..."
     try_push

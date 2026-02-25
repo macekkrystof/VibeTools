@@ -1,0 +1,125 @@
+# ============================================================================
+# Ralph Agent - Docker Image Template
+# ============================================================================
+# Base image with Claude CLI + Codex CLI + Git + SSH.
+# CLIs are auto-updated on every container start (see ralph.sh / ralph-codex.sh).
+# Customize the FROM image and add project-specific dependencies as needed.
+#
+# Examples:
+#   .NET:    FROM mcr.microsoft.com/dotnet/sdk:9.0
+#   Node.js: FROM node:20-bookworm
+#   C++:     FROM gcc:14
+#   Python:  FROM python:3.12-bookworm
+# ============================================================================
+
+FROM node:20-bookworm
+
+# ============================================================================
+# SYSTEM DEPENDENCIES
+# ============================================================================
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    jq \
+    ca-certificates \
+    gnupg \
+    openssh-client \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================================
+# PROJECT-SPECIFIC DEPENDENCIES
+# ============================================================================
+# Add your project's runtime/SDK here. Examples:
+#
+# .NET SDK:
+#   (Use dotnet base image instead, or install manually)
+#
+# Playwright (for UI testing):
+#   RUN npx playwright install-deps chromium
+#   RUN npx playwright install chromium
+#
+# Python packages:
+#   RUN pip install -r requirements.txt
+#
+# C++ build tools:
+#   RUN apt-get update && apt-get install -y cmake build-essential
+
+# ============================================================================
+# USER SETUP
+# ============================================================================
+# Claude CLI refuses --dangerously-skip-permissions when running as root,
+# so we create a non-root user.
+#
+# We explicitly set UID 1000 to match the typical host UID
+# (docker-compose uses `user: "${HOST_UID:-1000}"`). This ensures the
+# running process has a valid /etc/passwd entry, which SSH requires
+# to locate the home directory and keys.
+#
+# We also make /etc/passwd group-writable as a fallback so ralph.sh
+# can add a passwd entry at runtime if the host UID differs.
+
+RUN useradd -u 1000 -m -s /bin/bash ralph \
+    && mkdir -p /home/ralph/.claude /home/ralph/.ssh /home/ralph/.npm-global \
+    && chown -R ralph:ralph /home/ralph \
+    && chmod g+w /etc/passwd
+
+# ============================================================================
+# NPM GLOBAL PREFIX (user-writable for runtime updates)
+# ============================================================================
+# CLIs are installed to a user-writable directory so ralph.sh can
+# run `npm install -g` at container startup to auto-update them.
+
+ENV NPM_CONFIG_PREFIX=/home/ralph/.npm-global
+ENV PATH="/home/ralph/.npm-global/bin:${PATH}"
+
+# Switch to ralph user BEFORE installing CLIs (installs into user prefix)
+USER ralph
+
+# ============================================================================
+# CLI INSTALLATION
+# ============================================================================
+
+RUN npm install -g @anthropic-ai/claude-code
+# Uncomment if using Codex:
+# RUN npm install -g @openai/codex
+
+# ============================================================================
+# WORKING DIRECTORY
+# ============================================================================
+
+WORKDIR /app
+
+# Mark /app as safe for git (required for mounted volumes)
+# Disable credential helper (gh CLI not installed, would block push)
+# Force SSH for GitHub (not HTTPS)
+RUN git config --global --add safe.directory /app \
+    && git config --global credential.helper "" \
+    && git config --global url."git@github.com:".insteadOf "https://github.com/"
+
+# ============================================================================
+# ENVIRONMENT DEFAULTS
+# ============================================================================
+# These can be overridden at runtime via docker-compose or -e flags.
+
+# Ralph settings
+ENV MAX_ITERATIONS=0
+ENV RETRY_DELAY=60
+ENV ERROR_RETRY_DELAY=5
+ENV AUTO_PUSH=true
+ENV PUSH_EVERY_N=1
+ENV ITERATION_TIMEOUT=3600
+
+# Git author
+ENV GIT_AUTHOR_NAME="Ralph Agent"
+ENV GIT_AUTHOR_EMAIL="ralph@localhost"
+ENV GIT_COMMITTER_NAME="Ralph Agent"
+ENV GIT_COMMITTER_EMAIL="ralph@localhost"
+
+# ============================================================================
+# ENTRYPOINT
+# ============================================================================
+# Default: Claude. Override in docker-compose for Codex.
+
+ENTRYPOINT ["/bin/bash", "/app/ralph.sh"]

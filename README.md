@@ -32,24 +32,31 @@ When every task is done, Ralph outputs `<promise>COMPLETE</promise>` — which i
 │   │      │       Try again next loop    │
 │   │      ▼                              │
 │   │    Commit & push                    │
-│   │    All done? ──Yes──→ 🎤⬇️          │
+│   │    All done? ──Yes──→ COMPLETE      │
 │   │      │                              │
 │   │      No                             │
 │   └──────┘                              │
 │                                         │
 │   Meanwhile: rate limits, crashes,      │
-│   OAuth expiry — Ralph handles it all.  │
+│   timeouts, OAuth expiry, orphan        │
+│   processes — Ralph handles it all.     │
 └─────────────────────────────────────────┘
 ```
 
 ## Features
 
 - **Autonomous iteration** — runs the AI agent in a loop until all tasks are complete (or the heat death of the universe, whichever comes first)
-- **Multi-agent support** — works with [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](https://github.com/openai/codex)
-- **Cross-platform** — PowerShell scripts for Windows, Bash script for Linux/Docker
+- **Multi-agent support** — works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](https://github.com/openai/codex)
+- **Cross-platform** — PowerShell scripts for Windows, Bash scripts for Linux/Docker
+- **Docker-ready** — Dockerfile + docker-compose templates with auto-updating CLIs on every start
 - **Rate limit resilience** — detects rate limits, waits, retries automatically (Ralph is very patient)
 - **Error recovery** — handles crashes, OAuth token expiry, empty outputs, and other fun surprises
-- **Auto-push** — commits and pushes to git after each successful task
+- **Iteration timeout** — kills stuck iterations after a configurable limit (default: 1 hour)
+- **Orphan process cleanup** — kills leftover processes (dev servers, browsers) between iterations
+- **Persistent logging** — logs to both stdout and a persistent log file for post-mortem analysis
+- **Git state tracking** — records HEAD before/after each iteration, shows new commits
+- **Auto-push** — commits and pushes to git, with configurable frequency (every N iterations)
+- **QA subagent** — launches a separate Playwright-based visual QA agent for UI verification
 - **Progress memory** — Ralph learns from previous iterations via `progress.txt`, so it doesn't repeat the same mistakes (unlike some of us)
 - **Completion detection** — knows when to stop via the `<promise>COMPLETE</promise>` marker
 - **Failure strategy** — skips tasks after 2 failed attempts to prevent infinite loops and wallet drain
@@ -58,13 +65,22 @@ When every task is done, Ralph outputs `<promise>COMPLETE</promise>` — which i
 
 ```
 Ralph loop/
-├── prompt.md           # Agent instructions (Ralph's job description)
-├── prd.md              # Task list with pass/fail tracking (Ralph's TODO list)
-├── progress.txt        # Iteration log & learnings (Ralph's diary)
-├── activity.md         # Audit trail (Ralph's timesheet)
-├── ralph-claude.ps1    # Windows runner for Claude CLI
-├── ralph-codex.ps1     # Windows runner for Codex CLI
-└── ralph.sh            # Linux/Docker runner for Claude CLI
+├── prompt.md               # Agent instructions (Ralph's job description)
+├── prd.md                  # Task list with status tracking (Ralph's TODO list)
+├── progress.txt            # Iteration log & learnings (Ralph's diary)
+├── activity.md             # Audit trail (Ralph's timesheet)
+│
+├── ralph-claude.ps1        # Windows runner — Claude Code
+├── ralph-codex.ps1         # Windows runner — OpenAI Codex
+├── ralph.sh                # Linux/Docker runner — Claude Code
+├── ralph-codex.sh          # Linux/Docker runner — OpenAI Codex
+│
+├── Dockerfile.ralph        # Docker image template (customize per project)
+├── docker-compose.ralph.yml # Docker Compose with claude + codex services
+├── run-ralph-claude.sh     # Convenience: build & start Claude container
+├── run-ralph-codex.sh      # Convenience: build & start Codex container
+│
+└── tasks.md                # (Optional) detailed audit/reference notes
 ```
 
 ## Quick Start
@@ -76,23 +92,29 @@ Edit `Ralph loop/prd.md` with your project description and task list:
 ```json
 [
   {
-    "id": 1,
+    "id": "TASK-001",
     "title": "Add user authentication",
     "description": "Implement JWT-based auth with login/register endpoints.",
-    "passes": false
+    "priority": "high",
+    "status": "planned",
+    "created": "2025-01-01",
+    "completed": null
   },
   {
-    "id": 2,
+    "id": "TASK-002",
     "title": "Create dashboard page",
     "description": "Build a responsive dashboard showing user stats.",
-    "passes": false
+    "priority": "medium",
+    "status": "planned",
+    "created": "2025-01-01",
+    "completed": null
   }
 ]
 ```
 
 ### 2. Customize the prompt
 
-Edit `Ralph loop/prompt.md` to match your project's tech stack and conventions. The default is geared toward .NET / Blazor / NUnit / Playwright, but Ralph is flexible.
+Edit `Ralph loop/prompt.md` to match your project's tech stack and conventions. Fill in the Build Commands section, adjust the QA verification steps, and set project-specific notes. Ralph is flexible — works with any stack.
 
 ### 3. Run Ralph
 
@@ -105,7 +127,7 @@ cd "Ralph loop"
 **Windows (Codex):**
 ```powershell
 cd "Ralph loop"
-.\ralph-codex.ps1 -Model "gpt-5.3-codex"
+.\ralph-codex.ps1 -Model "o4-mini"
 ```
 
 **Linux / Docker (Claude):**
@@ -114,13 +136,30 @@ cd "Ralph loop"
 ./ralph.sh
 ```
 
+**Linux / Docker (Codex):**
+```bash
+cd "Ralph loop"
+./ralph-codex.sh
+```
+
+**Docker Compose:**
+```bash
+cd "Ralph loop"
+./run-ralph-claude.sh                # build & start Claude agent
+./run-ralph-codex.sh                 # build & start Codex agent
+./run-ralph-claude.sh --detach       # run in background
+./run-ralph-claude.sh down           # stop
+```
+
 ### 4. Go do something else
 
 Ralph will iterate through tasks, test, commit, push, and handle errors. Come back when it's done. Or don't. Ralph doesn't need supervision. Ralph doesn't need encouragement. Ralph just works.
 
 ## Configuration
 
-### Claude Runner (`ralph-claude.ps1`)
+### Claude Runners
+
+**PowerShell** (`ralph-claude.ps1`):
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -128,36 +167,76 @@ Ralph will iterate through tasks, test, commit, push, and handle errors. Come ba
 | `-RetryDelay` | `60` | Seconds to wait on rate limit |
 | `-ErrorRetryDelay` | `5` | Seconds to wait on error |
 | `-AutoPush` | `$true` | Auto-push commits to remote |
+| `-PushEveryN` | `1` | Push every N iterations |
+| `-IterationTimeout` | `3600` | Max seconds per iteration (warning only on PS) |
+| `-PromptFiles` | `@prompt.md @progress.txt` | Files to pass to Claude |
 
-### Codex Runner (`ralph-codex.ps1`)
+**Bash** (`ralph.sh`):
 
-All of the above, plus:
-
-| Parameter | Default | Description |
+| Environment Variable | Default | Description |
 |---|---|---|
-| `-Model` | *(Codex default)* | OpenAI model to use |
+| `MAX_ITERATIONS` | `0` | Max iterations (0 = unlimited) |
+| `RETRY_DELAY` | `60` | Seconds to wait on rate limit |
+| `ERROR_RETRY_DELAY` | `5` | Seconds to wait on error |
+| `AUTO_PUSH` | `true` | Auto-push commits to remote |
+| `PUSH_EVERY_N` | `1` | Push every N iterations |
+| `ITERATION_TIMEOUT` | `3600` | Max seconds per iteration (hard kill) |
+| `PROMPT_FILES` | `@prompt.md @progress.txt` | Files to pass to Claude |
+| `LOGDIR` | `/app/.claude/logs` | Log file directory |
+| `CLAUDE_CONFIG_DIR` | — | Path to Claude credentials |
+| `ANTHROPIC_API_KEY` | — | API key (alternative to login) |
 
-### Bash Runner (`ralph.sh`)
+### Codex Runners
 
-Uses environment variables: `MAX_ITERATIONS`, `RETRY_DELAY`, `ERROR_RETRY_DELAY`, `AUTO_PUSH`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY`.
+Same parameters as above, plus:
+
+| Parameter / Env Var | Default | Description |
+|---|---|---|
+| `-Model` / `CODEX_MODEL` | *(Codex default)* | OpenAI model to use |
+
+### Docker
+
+| Variable | Default | Description |
+|---|---|---|
+| `HOST_UID` | `1000` | Host user UID (for volume permissions) |
+| `HOST_GID` | `1000` | Host user GID |
+| `GIT_AUTHOR_NAME` | `Ralph Agent` | Git commit author |
+| `GIT_AUTHOR_EMAIL` | `ralph@localhost` | Git commit email |
+
+CLIs are **auto-updated on every container start** via npm, so you always get the latest version without rebuilding the image.
 
 ## How It Works
 
-1. **Ralph reads the PRD** — finds the next task marked `"passes": false`
-2. **Ralph implements it** — writes code, writes unit tests, writes UI tests
-3. **Ralph runs the tests** — build, unit tests, UI tests, visual checks
-4. **If tests pass** — marks the task complete, commits with `feat: [description]`, updates progress log
-5. **If tests fail** — logs what went wrong in `progress.txt`, does NOT commit, tries again next iteration
-6. **If stuck for 2 iterations** — skips the task, moves on (pragmatism > perfectionism)
-7. **If all tasks pass** — outputs `<promise>COMPLETE</promise>` and Ralph clocks out
+1. **Ralph reads the PRD** — finds the next task with status `planned`
+2. **Ralph checks progress.txt** — reads learnings from previous iterations
+3. **Ralph implements it** — writes code, writes tests, does one task per iteration
+4. **Ralph runs the tests** — build, unit tests, UI tests, visual QA via subagent
+5. **If tests pass** — marks the task `done`, commits with `feat: [description]`, updates progress log
+6. **If tests fail** — logs what went wrong in `progress.txt`, does NOT commit, tries again next iteration
+7. **If stuck for 2 iterations** — skips the task, moves on (pragmatism > perfectionism)
+8. **If all tasks are done** — outputs `<promise>COMPLETE</promise>` and Ralph clocks out
 
-The runner scripts handle everything around this loop: rate limits, retries, auth refresh, git push, and graceful shutdown.
+The runner scripts handle everything around this loop: rate limits, retries, auth refresh, timeouts, orphan cleanup, git push, and graceful shutdown.
+
+## Docker Setup
+
+1. **Customize `Dockerfile.ralph`** — change the base image for your stack, add project dependencies
+2. **Customize `docker-compose.ralph.yml`** — add database services, adjust env vars, set volume mounts
+3. **Run:**
+   ```bash
+   ./run-ralph-claude.sh --build     # first run (builds image)
+   ./run-ralph-claude.sh             # subsequent runs
+   ./run-ralph-claude.sh --detach    # background mode
+   ```
+
+The Dockerfile uses a user-writable npm prefix, so the CLI auto-updates on each start without needing root.
 
 ## Prerequisites
 
-- **Claude CLI** (`claude`) or **Codex CLI** (`codex`) installed and authenticated
+- **Claude Code** (`claude`) or **Codex CLI** (`codex`) installed and authenticated
 - **Git** configured with push access to your remote
-- Your project's build tools (e.g., `dotnet`, `node`, etc.)
+- Your project's build tools (e.g., `dotnet`, `node`, `cmake`, etc.)
+- **Docker** (optional, for containerized runs)
 
 ## FAQ
 
@@ -165,13 +244,19 @@ The runner scripts handle everything around this loop: rate limits, retries, aut
 A: Every autonomous agent deserves a name. Ralph felt right. Ralph is dependable. Ralph doesn't complain about code reviews. Ralph is the coworker we all wish we had.
 
 **Q: What if Ralph gets stuck in an infinite loop?**
-A: Ralph has a 2-iteration rule. If the same task fails twice, Ralph skips it. Also, you can set `-Max` to cap the total number of iterations. Ralph respects boundaries.
+A: Ralph has a 2-iteration rule. If the same task fails twice, Ralph skips it. Plus, `ITERATION_TIMEOUT` kills stuck iterations after 1 hour. You can also set `-Max` to cap total iterations. Ralph respects boundaries.
 
 **Q: What if I hit API rate limits?**
 A: Ralph waits patiently and retries. Ralph has been rate-limited more times than it can count (it actually does count — check the logs). Ralph doesn't take it personally.
 
 **Q: Can Ralph work on any project?**
-A: The default prompt is tuned for .NET/Blazor/NUnit/Playwright, but you can customize `prompt.md` for any stack. Ralph is adaptable. Ralph contains multitudes.
+A: Yes. Customize `prompt.md` and `prd.md` for your stack. Ralph has been battle-tested on .NET, Node.js, C++, and Python projects. Ralph contains multitudes.
+
+**Q: What about leftover processes (dev servers, browsers)?**
+A: `cleanup_orphans()` in `ralph.sh` kills them between iterations. Uncomment and customize the patterns for your stack.
+
+**Q: Does the Docker container auto-update the CLI?**
+A: Yes. On every container start, `npm install -g` runs to pull the latest version. No image rebuild needed.
 
 **Q: Is this vibe coding?**
 A: This is *autonomous* vibe coding. You set the vibe. Ralph does the coding.

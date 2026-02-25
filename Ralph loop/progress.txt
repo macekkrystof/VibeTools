@@ -1,0 +1,14 @@
+# Progress Log
+
+*(Entries are added by Ralph after each iteration. Format below.)*
+
+## Iteration [N] - [Task ID]: [Task Name]
+- What was implemented
+- Files changed
+- Test results
+- QA report summary (if applicable)
+- Learnings for future iterations:
+  - Patterns discovered
+  - Gotchas encountered
+  - Useful context
+---
